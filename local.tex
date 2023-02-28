@@ -1,0 +1,39 @@
+% \usepackage[UTF8]{ctex}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{multicol}
+\usepackage{float}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{color}
+\usepackage{framed}
+\usepackage{listings}
+\lstset{
+  basicstyle=\small\ttfamily,
+  frame=single,
+  numbers=left,
+  numberstyle=\tiny\color{darkgray},
+  breakatwhitespace=false,
+  xleftmargin=3em,
+  xrightmargin=1em,
+  escapeinside=``,
+}
+\newfloat{lstfloat}{H}{lof}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\newtheorem{Definition}{Definition}[section]
+\newtheorem{Lemma}{Lemma}[section]
+\usepackage{mathtools}
+\usepackage{pifont}
+\usepackage{latexsym}
+\newcommand{\cmark}{\ding{51}}
+\newcommand{\xmark}{\ding{55}}
+\usepackage{dashbox}
+\usepackage{tikz}
+\usetikzlibrary{graphs}
+\usepackage{xspace}
+
+\newcommand{\doubleangle}[1]{[\![ \text{#1} ]\!]}
+\newcommand{\dashedph}[1][H]{\setlength{\fboxsep}{0pt}\setlength{\dashlength}{2pt}\setlength{\dashdash}{1pt} \dbox{\phantom{#1}}}
+
+\newcommand{\todo}{\textcolor{red}{\textbf{TODO}}}

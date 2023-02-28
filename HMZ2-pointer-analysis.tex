@@ -1,0 +1,225 @@
+\section{Pointer analysis}
+
+When the lvalue of two objects coincides the objects are said to be aliased. In
+languages with pointers and/or call-by-reference parameters, alias analysis is
+the core part of most other data flow analyses. For example, live-variable
+analysis of an experssion `*p = 13' must make worst-case assumptions without
+alias information: `p' may reference all (visible) objects, which then
+subsequently must be marked live. Clearly, this renders live-variable analysis
+nearly useless. On the other hand, if it is known that only the aliases
+$\{<*p, x>, <*p, y>\}$ are possible, only `x' and `y' need to be marked live.
+
+A point-to map $[p \mapsto \{x, y\}]$ carries the same information as an alias
+set, but it is a more compact representation.
+
+\subsection{What makes C harder to analyze?}
+
+\paragraph{Multi-level pointers and the address operator `\&'}
+The address operator can be employed to compute the address of an object with an
+lvalue. With only single-level pointers, the variable to be updated is
+syntactically present in the expression. Call-by-reference and single-level
+pointers can simulate multi-level pointers.
+
+\paragraph{Structs and unions}
+Pointers can point to members of structs.
+
+\paragraph{Runtime memory allocations}
+Pointers are allowed to point to both stack and heap allocated objects. Value
+setting functoins may create a dynamic point-to relation, examples include
+`p=\&x', `alloc()' and `strdup()'.
+
+\paragraph{Type casts}
+Type casts enable pointers to change type. A special characteristic of the C
+languagee is that implementation-defined features are supported by the Standard.
+A C program can comply to the Standard in two ways. A
+\textit{strictly conforming} program shall not depend on implementation-defined
+behavior but a \textit{conforming} program is allowed to do so. In ISO 1990,
+cast of an integral value to a pointer or conversely is an
+implementation-defined behavior. Cast of a pointer to a pointer with less
+alignment requirement and back again, is strictly conforming.
+Implementation-defined features cannot be described accurately by an
+architecture-independent analysis.
+
+\paragraph{Function pointers}
+Pointers to functions can be defined.
+
+\paragraph{Separate compilation}
+A C program usually consists of a collection of translation units that are
+compiled separately and linked to an executable. Suppose that a pointer analysis
+is applied to a single module. This has two consequences. Potentially, global
+variables may be modified by assignments in other modules. To be safe,
+worst-case assumptions, i.e. Unknown, about global variables must be made.
+Secondly, functions may be called from other modules with unknown parameters.
+Thus, to be safe, all functions must be approximated by Unknown.
+
+\subsection{Andersen's pointer analysis}
+
+%% Andersen specifies the pointer analysis by the means of a non-standard type
+%% inference system, which is related to the standard semantics. From the
+%% specification, a constraint-based formulation is derived and an efficient
+%% inference algorithm developed.
+
+%% The set-based analysis consists of two parts: a specification and an inference
+%% algorithm. The specification desribes the safety of a pointer approximation.
+%% He presents a set of inference rules such that a pointer abstraction map
+%% fulfills the rules only if the map is safe.
+
+%% For every object of pointer type he determines a safe approximation to the set
+%% of locations the pointer may contain during program execution, for all possible
+%% input. A special case is function pointers. The result of the analysis is the
+%% set of functions the pointer may invoke.
+
+%% Constraint-based analysis resembles classical data-flow analysis, but has a
+%% stronger semantical foundation.
+
+A pointer abstraction is a map from abstract program objects (variables) to set
+of abstract locations. An abstraction is safe if for every object of pointer
+type, the set of concrete addresses it may contain at runtime is safely
+described by the set of abstract locations.
+
+\subsubsection{Abstract location}
+
+A pointer is a variable containing the distinguished constant `NULL' or an
+address. Due to casts, a pointer can (in principle) point to an arbitrary
+address. An object is a set of logically related locations, e.g. four bytes
+representing an integer value, or n bytes representing a struct value. Since
+pointers may point to functions, we will also consider functions as objects.
+
+An object can either be allocated on the program stack (local variables), at a
+fixed location (strings and global variables), in the code space (functions), or
+on the heap (runtime allocated objects). We shall only be concerned with the run
+time allocated object brought into existence via `alloc()' calls. Assume that
+all calls are labeled uniquely.
+
+\begin{Definition}
+  Let `p' be a pointer. If a pointer abstraction maps `p' to Unknown,
+  $[p \mapsto Unknown]$, `p' may point to all accessible objects at runtime.
+\end{Definition}
+
+The unique abstract location Unknown denotes an arbitrary, unknown address,
+which both be valid or illegal.
+
+\begin{Definition}
+  The set of abstract locations ALoc is defined inductively as follows:
+  \begin{itemize}
+  \item If v is the name of a global varible: $v \in ALoc$.
+  \item If v is a parameter of some function with n variants:
+    $v^i \in ALoc, i = 1, \dots, n$.
+  \item If v is a local variable in some function with n variants:
+    $v^i \in ALoc, i = 1, \dots, n$.
+  \item If s is a string constant: $s \in ALoc$.
+  \item If f is the name of a function with n variants:
+    $f^i \in ALoc, i = 1, \dots, n$.
+  \item If f is the name of a function with n variants:
+    $f^i_0 \in ALoc, i = 1, \dots, n$.
+  \item If l is the label of an alloc in a function with n variants:
+    $l^i \in ALoc, i = 1, \dots, n$.
+  \item If l is the label of an address operator in a function with n variants:
+    $l^i \in ALoc, i = 1, \dots, n$.
+  \item If $o \in ALoc$ denotes an object of type ``array'': $o[] \in ALoc$.
+  \item If S is the type name of a struct or union type: $S \in ALoc$.
+  \item If $S \in ALoc$ is of type ``struct'' or ``union'':
+    $S.i \in ALoc$ for all fields i of S.
+  \end{itemize}
+  Names are assumed to be unique.
+\end{Definition}
+
+We assume that a program's static-call graph is available. The static-call graph
+approximates the invocation of functoins, and assigns a variant number to
+functions according to the call context. The location $f_0$ associated with
+function $f$ denotes an abstract return location, i.e. a unique location where
+$f$ delivers its return value. Arrays are treated as aggregates, that is, all
+entries are merged. Fields of struct objects of the same name are merged, e.g.
+given definition `struct S \{ int x; \} s, t', fields `s.x' and `t.x' are
+collapsed.
+
+% Point-to information for field members of a struct variable is associated with
+% the definition of a struct; not the struct objects. For example, the point to
+% information for member `s.x' is represented by `S1.x', where `S1' is the
+% definition of `struct S1', which is a variant of the struct type.
+
+\subsubsection{Pointer abstraction}
+
+A pointer abstraction $\tilde{S} : ALoc \rightarrow \wp(ALoc)$ is a map from
+abstract locations to sets of abstract locations.
+
+\begin{Definition}
+\label{def:pt-abs}
+  A pointer abstraction $\tilde{S} : ALoc \rightarrow \wp(ALoc)$ is a map
+  satisfying:
+  \begin{enumerate}
+  \item If $o \in ALoc$ is of base type: $\tilde{S}(o) = \{Unknown\}$.
+  \item If $s \in ALoc$ is of struct/union type: $\tilde{S}(s) = \{\}$.
+  \item If $f \in ALoc$ is a function designator: $\tilde{S}(f) = \{\}$.
+  \item If $a \in ALoc$ is of type array: $\tilde{S}(a) = \{a[]\}$.
+  \item $\tilde{S}(Unknown) = \{Unknown\}$.
+  \end{enumerate}
+\end{Definition}
+
+The first condition requires that objects of base types are abstracted by
+Unknown. The motivation is that the value may be cast into a pointer, and is
+hence Unknown (in general). The fourth condition requires that an array
+variable points to the content. In reality, `a' in `a[10]' is not a lvalue. It
+is, however, convenient to consider `a' to be a pointer to the content.
+
+\subsubsection{Safe pointer abstraction}
+
+A pointer abstraction for a program is safe if for all input, every object a
+pointer may point to at runtime is captured by the abstraction.
+
+Let the abstraction functoin $\alpha : Loc \rightarrow ALoc$ be defined the
+obvious way. An execution path from the initial program point $p_0$ and an
+inital program store $S_0$ is denoted by
+$$<p_0,S_0> \rightarrow \dots \rightarrow <p_n,S_n>$$
+where $S_n$ is the store at program point $p_0$.
+
+Let $p$ be a program and $S_0$ an initial store (mapping the program input to
+the parameters of the goal function). Let $p_n$ be a program point, and
+$\mathcal{L}_n$ the locations of all visible variables. A pointer abstraction
+$\tilde{S}$ is safe with respect to $p$ if
+$$l \in \mathcal{L}_n : \alpha(S_n(l)) \subseteq \tilde{S}(\alpha(l))$$
+whenever $<p_0,S_0> \rightarrow \dots \rightarrow <p_n,S_n>$.
+
+The definition of safety above considers only monolithic programs where no
+external functions nor variables exist. We are, however, interested in analysis
+of translation units where parts of the program may be undefined.
+
+\begin{Definition}
+  Let $p \equiv m_1, \dots, m_m$ be a program consisting of the modules $m_i$.
+  A pointer abstraction $\tilde{S}$ is safe for $m_{i0}$ if for all program
+  points $p_n$ and initial stores $S_0$ where
+  $<p_0,S_0> \rightarrow \dots \rightarrow <p_n,S_n>$, then:
+  \begin{itemize}
+  \item for
+    $l \in \mathcal{L}_n : \alpha(S_n(l)) \subseteq \tilde{S}(\alpha(l))$ if $l$
+    is defined in $m_{i0}$,
+  \item for $l \in \mathcal{L}_n : \tilde{S}(l) = \{Unknown\}$ if $l$ is defined
+    in $m_i \neq m_{i0}$
+  \end{itemize}
+  where $\mathcal{L}_n$ is the set of visible variables at program point $n$.
+\end{Definition}
+
+\subsubsection{Pointer analysis specification}
+
+We specify a flow-insensitve (summary), intra-procedural pointer analysis.
+
+The specification can be employed to check that a given pointer abstraction
+$\tilde{S}$ is safe for a program. The specification is in the form of inference
+rules $\tilde{S} \vdash p : \bullet$.
+
+We argue that if the program fulfills the rules in the context of a pointer
+abstraction $\tilde{S}$, then $\tilde{S}$ is a safe pointer abstraction.
+Actually, the rules will also fail if $\tilde{S}$ is not a pointer abstraction,
+i.e. does not satisfy \autoref{def:pt-abs}. Let $\tilde{S}$ be given.
+
+Suppose that $d \equiv x : T$ is a definition (i.e., not an `extern'
+declaration). The safety of $\mathcal{S}$ with respect to $d$ depends on the
+type $T$.
+
+\begin{Lemma}
+  Let $d \in Decl$ be a definition. Then
+  $\tilde{S} : ALoc \rightarrow \wp(ALoc)$ is a pointer abstraction with respect
+  to $d$ if
+  $$\tilde{S} \vdash^{pdecl} d : \bullet$$
+  where $\vdash^{pdecl}$ is defined in , and $\tilde{S}(Unknown) = \{Unknown\}$.
+\end{Lemma}

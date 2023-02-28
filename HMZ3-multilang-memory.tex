@@ -1,0 +1,278 @@
+\section{多语言程序的内存错误与指针分析}
+
+\subsection{多语言程序的内存错误}
+
+High-level 的宿主语言一般采用自动垃圾收集机制管理其堆内存。例如，Python 使用引用计数算法进行自动垃圾收集，Python runtime 在程序执行过程中调整引用计数并维持对象的引用计数（ob\_refcnt）等于其引用数的不变式，当对象的引用计数为 0 时，垃圾收集器回收其堆空间。Go 使用优化的标记清除算法进行自动垃圾收集 [\href{https://zhuanlan.zhihu.com/p/76802887}{Go 内存模型}, \href{https://tip.golang.org/doc/gc-guide}{Go 垃圾收集器}，\href{https://zhuanlan.zhihu.com/p/390926887}{Go 垃圾回收算法}]，当堆分配占用量或回收时间间隔达到触发阀值，则会进行标记清除以回收不可达的内存占用。
+
+然而，外部语言一般不在宿主语言的垃圾收集器的管理范围内。在多语言程序中，当底层模块通过外部函数接口（FFI）操作宿主语言对象时，会影响宿主语言对该对象的自动回收。例如，当底层 C 模块通过 Python/C API 操作 Python 对象时，Python runtime 不会自动调整其引用计数。Go 通过 \href{https://golang.google.cn/cmd/cgo/}{cgo} 调用将 Go 对象传入底层 C 模块后，Go runtime 无法知道底层模块对该对象的持有周期以及是否会修改其内存，底层模块也无法知道传入的内存是在堆上还是栈上分配的，是否需要释放 [\href{https://www.pengrl.com/p/29054/}{cgo 内存管理}]。
+
+\begin{lstfloat}
+\begin{lstlisting}[language={C},caption={错误的 Python/C 接口程序},label={code:bug-pyc}]
+PyObject *test(PyObject *self, PyObject *args)
+{
+  PyObject *list;
+  PyObject *item;
+  list = PyList_New(1);
+  if (!list)
+    return NULL;
+  item = PyLong_FromLong(42);
+  if (!item) {
+    /* Memory leak: missing Py_DECREF(list) */
+    return NULL;
+  }
+  /* This steals a reference to item; item is not leaked. */
+  PyList_SetItem(list, 0, item);
+  return list;
+}
+\end{lstlisting}
+\end{lstfloat}
+
+由于 Python runtime 不能自动调整底层 C 模块中的 Python 对象的引用计数，底层模块需要通过增减对象引用计数的 Python/C API 来手动维护引用计数，这是易错的。\autoref{code:bug-pyc} 所示为包含内存错误的 Python/C 接口代码，\texttt{PyList\_New} 执行成功会将 \texttt{list} 的引用计数加 1，在函数返回前，需要手动将其引用计数减 1 以避免内存泄漏。“偷引用”等特性 [\href{https://docs.python.org/3/c-api/intro.html#reference-count-details}{偷/借引用}] 的存在（如 \autoref{code:bug-pyc} 中的 \texttt{PyList\_SetItem}，对比 \texttt{PyList\_Append} [\href{https://stackoverflow.com/questions/57143041/memory-leak-in-c-extension-for-python}{StackOverflow 错误例子}]）增加了人工管理引用计数的难度。
+
+\begin{lstfloat}
+\begin{lstlisting}[language={Go},caption={错误的 cgo 程序},label={code:bug-cgo}]
+package main
+/*
+#include <stdio.h>
+void cFuncChar(char* ptr) {
+  printf("%s\n", ptr);
+}
+void cFuncVoid(void* ptr) {
+  printf("%s\n", (char*)ptr);
+}
+*/
+import "C"
+import "unsafe"
+type MyStruct struct {
+  Distraction [2]byte
+  Dangerous *int
+}
+func main() {
+  cstr := C.CString("hello")
+  /* Memory leak: missing C.free(cstr) */
+  bypassPanic(1)
+  triggerPanic(1)
+}
+func bypassPanic(i int) {
+  ms := &MyStruct{[2]byte{'A', 0}, &i}
+  C.cFuncChar((*C.char)(unsafe.Pointer(ms)))
+}
+func triggerPanic(i int) {
+  ms := &MyStruct{[2]byte{'B', 0}, &i}
+  C.cFuncVoid(unsafe.Pointer(ms))
+}
+\end{lstlisting}
+\end{lstfloat}
+
+Go 的垃圾收集器不能自动回收底层 C 模块中的 Go 对象，需要底层模块通过 cgo 调用手动回收，同时还面临其他问题。
+
+\begin{enumerate}
+\item 标记清除算法（可能存在内存搬运，栈扩容也可能）相较引用计数算法的复杂性引入了额外约束 [\href{https://pkg.go.dev/cmd/cgo#hdr-Passing_pointers}{cgo 传指针的约束}]，cgo 不应向外部函数传递一个指向包含 Go 指针的内存的 Go 指针 [\href{https://go.dev/src/runtime/cgocall.go#L362}{cgoCheckPointer 实现}]，\autoref{code:bug-cgo} 第 29 行在运行时会 panic。
+\item 聚合类型与矢量类型，聚合类型如 struct 的域、矢量类型如 array 和 slice 的整体应满足 1 中的约束。
+\item cgo 程序常常用到 unsafe 特性，比如为了避免语言间的内存拷贝，但是 C 代码直接操作 Go 内存的安全性需要程序员自己保证。
+\item 底层模块应维持 1 中的约束，C 代码不应向 Go 内存中放入 Go 指针，哪怕是临时地。\autoref{code:bug-cgo} 第 25 行的代码通过 Go 指针向 C 指针的类型转换绕过了运行时检查 [\href{http://www.loglop.com/pages/20210326-01.html}{cgo 绕过指针检查}]，但是此时 C 代码对该内存的修改或回收都可能导致安全问题。
+\item 多层指针与地址操作符。
+\item 已知的实现上的漏洞 [\href{https://github.com/golang/go/issues/28606}{Go issue 28606}]，向 C 内存中写 \texttt{nil} 或 C 指针是允许的，但是存在把 C 内存误认为 Go 指针，进而误报 1 中约束违反的问题；同时全局变量的使用也可能导致漏报 1 中约束违反的问题，\autoref{code:bug-cgo} 中把变量 \texttt{i} 改成全局变量则第 29 行的代码也无法得到运行时报错（更新：应为“一个指向包含 Go 指针的堆内存的 Go 指针”，全局变量在数据区）。
+\end{enumerate}
+
+\subsection{已有的解决方案}
+
+\subsubsection{gcc-python-plugin/gcc-with-cpychecker}
+
+gcc-python-plugin 是一个链接了 libpython 的 GCC 插件 [\href{https://gcc.gnu.org/onlinedocs/gccint/Plugins.html}{GCC plugin}]，并在此基础上实现了一个静态检查工具 CPyChecker [\href{https://github.com/davidmalcolm/gcc-python-plugin/blob/master/gcc-with-cpychecker}{code}, \href{https://gcc-python-plugin.readthedocs.io/en/latest/cpychecker.html}{doc}]，检查 CPython 的 C 扩展模块中引用计数和异常状态相关的漏洞。
+
+CPyChecker 对引用计数的跟踪包含两个部分，函数的上下文内可知的引用计数和程序其他部分持有的引用。例如在 \autoref{code:bug-pyc} 中，\texttt{PyList\_New(1)} 调用成功后，\texttt{list} 对象的引用计数记为 $1+N$，其中 $N$ 是程序其他部分持有的引用的未知值，$N \ge 0$。CPyChecker 通过函数的上下文结束后对象的引用计数是否为 $0 + N'$ 来检查内存错误，对象被存储到其他未知位置可能导致 $N' = N + 1$。
+
+CPyChecker 存在如下不足。
+
+\begin{enumerate}
+\item 对于循环，只跟踪其一次迭代。
+\item 跟踪路径数有上限限制，不能分析复杂的程序。
+\item 缺乏函数间的分析，它假设只要函数返回 Python 对象（\texttt{PyObject*}），必然是一个新的引用或 \texttt{NULL}（异常），函数间的“偷/借”引用行为需要人为指定。
+\item 基于 GCC 的别名分析 [\href{https://gcc.gnu.org/onlinedocs/gccint/Alias-analysis.html}{alias analysis}, \href{https://gcc.gnu.org/onlinedocs/gccint/Tree-SSA-passes.html}{tree SSA passes}]，能够检查一些简单的空指针解引用的问题，但是不支持域敏感的分析 [\href{https://gcc-python-plugin.readthedocs.io/en/latest/0.7.html#signal-noise-ratio-improvements}{release note 0.7}] 和多层指针 [\href{https://github.com/davidmalcolm/gcc-python-plugin/issues/167}{issue 167}, \texttt{PyObject *PyLong\_FromString(const char *str, char **pend, int base)}]。
+\item 不支持弱引用 [\href{https://github.com/davidmalcolm/gcc-python-plugin/issues/58}{issue 58}, \href{https://docs.python.org/3/c-api/weakref.html}{弱引用 Python/C API}]。
+\end{enumerate}
+
+\subsubsection{Li \& Tan 2014 Pungi}
+
+\href{https://link.springer.com/chapter/10.1007/978-3-662-44202-9_4}{Pungi} 是 Li 和 Tan 在 ECOOP 2014 提出的一种检查 Python/C 接口代码中的引用计数内存错误的方法。其核心思路是：在变量的引用不逃逸出其作用域时，一个对象引用计数的变化量在其作用域结束时应该为零；在存在逃逸时（通过返回值或写堆内存），则应该等于其引用的逃逸数。Pungi 利用仿射抽象（affine abstraction）来跟踪这一变化量，通过程序变换把赋值语句的 right-hand side 变成仿射形式 $a_0 + \Sigma_{i=1}^na_ix_i$，其中 $a_i$ 是常数，$x_i$ 是变量。\autoref{code:affine} 是一个带有逃逸引用的仿射变换例子，仿射程序变量 \texttt{rc} 记录引用计数变化量，\texttt{on} 是对象非空的标记变量，\texttt{ev} 记录变量的引用逃逸数。
+
+\begin{figure}[H]
+\begin{minipage}[t]{0.525\linewidth}
+\begin{lstlisting}[language={C}]
+PyObject *foo() {
+  PyObject *pyo = PyInt_FromLong(10);
+  if (pyo == NULL) {
+    return NULL;
+  }
+  return pyo;
+}
+\end{lstlisting}
+\end{minipage}
+\begin{minipage}[t]{0.445\linewidth}
+\begin{lstlisting}
+foo() {
+  locals rc1, ev1, on1;
+  rc1 = 0; ev1 = 0;
+  if (?) { rc1 = 1; on1 = 1; }
+  else { rc1 = 0; on1 = 0; }
+  if (on1 == 0) {
+    assert (rc1 == ev1);
+    return;
+  }
+  if (on1 == 1) ev1++;
+  assert (rc1 == ev1);
+  return (rc1, ev1);
+}
+\end{lstlisting}
+\end{minipage}
+\caption{一个带有逃逸引用的仿射变换例子}
+\label{code:affine}
+\end{figure}
+
+Pungi 通过基于 SSA 形式的变换、对引用逃逸的补充和过程间分析解决了 CPyChecker 的不足 1、2、3，但它也存在以下不足。
+
+\begin{enumerate}
+\item 利用仿射程序分析引用计数基于 shallow alias 的假设，即多层引用一定不是别名。
+\item 由于缺少宿主语言的指针信息，只能假设底层入口函数的参数对象不会引用同一对象。
+\end{enumerate}
+
+\subsubsection{Mao et al. 2016 RID}
+
+\href{https://dl.acm.org/doi/10.1145/2980024.2872389}{RID} 是 Mao 等人在 ASPLOS 2016 提出的检查引用计数错误的方法，它把引用计数的定义做了一个扩展。
+
+\begin{enumerate}
+\item 一个动态分配对象的引用计数，是对指向该对象的指针数量的跟踪。
+\item 一个设备结构的引用计数，是对使用该设备的线程数的追踪。
+\end{enumerate}
+
+从而把引用计数错误检查扩展到了使用定义 2 的 Linux 内核。
+
+\begin{lstfloat}
+\begin{lstlisting}[language={C},caption={错误的 Linux 电源管理子系统代码},label={code:bug-pmcount}]
+int reg_read(device *d, int reg);
+void inc_pmcount(device *d)
+int foo(device *dev) {
+  assert(dev != NULL);
+  int v = reg_read(dev, 0x54);
+  if (v <= 0)
+    goto exit;
+  inc_pmcount(dev);
+  // more register reads/writes
+exit:
+  return 0;
+}
+\end{lstlisting}
+\end{lstfloat}
+
+\autoref{code:bug-pmcount} 是 Linux 电源管理子系统的错误例子，它也显示出 CPyChecker 和 Pungi 这种跟踪作用域内引用计数变化量的方法的一个缺点，即需要知道引用计数 API 的语义，这对于基本固定且大小适中的 API 集合而言是可行，例如 Python/C API 的引用计数子集；但对于 Linux 内核中众多且变化的子系统而言，引用计数 API 可能很多且处于迭代变化中。为此，RID 采用了一种不同的引用计数错误检查方法，称为不一致路径对（inconsistent path pairs, IPP）。\autoref{code:bug-pmcount} 对应的不一致路径对如 \autoref{fig:ipp} 所示。假设，在运行时，程序到达 \texttt{foo} 函数的入口时，\texttt{dev} 的 PM 计数为 $n$，如果执行 $p_1$ 路径，则 PM 计数变为 $n+1$，而执行 $p_2$ 路径则是 $n$，$(p_1, p_2)$ 为不一致路径对。
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+[
+  Node/.style={circle, draw=black},
+  Path/.style={rectangle, draw=black}
+]
+\node[Path] (p1) at (0, 2) {$p_1$};
+\node[Path] (p2) at (4, 2) {$p_2$};
+\node[Node] (n12) at (2, 0) {12};
+\node[Node] (n10) at (1, 1) {10};
+\node[Node] (n8)  at (3, 2) {8};
+\node[Node] (n9)  at (1, 3) {9};
+\node[Node] (n7)  at (2, 4) {7};
+\node[Node] (n6)  at (2, 5) {6};
+\node[Node] (n5)  at (2, 6) {5};
+\draw[dashed, black!50] (2, 6.5) -- (2, -0.5);
+\graph {
+  (n5) -> (n6) -> (n7) -> (n9) -> (n10) -> (n12);
+  (n7) -> (n8) -> (n12);
+};
+\end{tikzpicture}
+\caption{\autoref{code:bug-pmcount} 例子对应的不一致路径对}
+\label{fig:ipp}
+\end{figure}
+
+RID 存在如下不足。
+
+\begin{enumerate}
+\item 扩展定义部分，Linux 内核子系统的引用计数 API 的语义基于 `inc'-`dec'、`get'-`put' 这样的关键字匹配，评估部分没有明确说误报率，人工算了一下高达 77\%。
+\item 非扩展定义部分，Python/C API 的语义仍需人工维护，但是只关注增减，而不关注是对哪个参数对象的增减，只提供了少量评估数据，并且是和 CPyChecker 对比，而不是和 Pungi 对比，提升与 Pungi 类似地来源于 CPyChecker 不是基于 SSA 形式的。交叉对比两篇文章的数据，RID 的精度应该不如 Pungi。
+\item 循环只展开一次。
+\item 分析路径数有上限。
+\item 不依赖指向分析且只支持线性算术，无法处理函数指针、向数据结构的域中存储和位操作。
+\end{enumerate}
+
+\subsubsection{Kondoh \& Onodera 2008 BEAM-JNI}
+
+BEAM（\href{https://ieeexplore.ieee.org/document/885870}{Brand 2000}）是由 IBM 设计的一个多种 Java 程序漏洞的检查工具，Kondoh 和 Onodera 在 ISSTA 2008 为 BEAM 增加了对 4 类 JNI 漏洞的检查 \href{https://dl.acm.org/doi/10.1145/1390630.1390645}{BEAM-JNI}，其中两类与内存相关，一个是与 \autoref{code:bug-cgo} 第 19 行类似的内存泄漏（及多次回收和回收后使用），一个是使用无效的局部引用（\autoref{code:bug-jni}）。
+
+\begin{lstfloat}
+\begin{lstlisting}[language={C},caption={错误的 JNI 程序},label={code:bug-jni}]
+static jclass fooCls;
+JNIEXPORT void JNICALL Java_Foo_initialize(JNIEnv *env, jclass cls) {
+  fooCls = (*env)->FindClass(env, "Foo");
+  /* fooCls should be converted into global: missing
+     fooCls = (*env)->NewGlobalRef(env, fooCls); */
+}
+JNIEXPORT void JNICALL Java_Foo_bar(JNIEnv *env, jobject object) {
+  jmethodID mid = (*env)->GetMethodID(env, fooCls, "foo", "()V");
+  /* Memory leak: missing env->DeleteGlobalRef(fooCls); */
+}
+\end{lstlisting}
+\end{lstfloat}
+
+JNI 对象 [\href{https://www.ibm.com/docs/en/sdk-java-technology/8?topic=jni-garbage-collector}{JNI 与 GC}]，即底层 C 代码中的 Java 对象，以引用形式存在，\autoref{tab:jniobjref} 是其三种不同的引用方式，本地引用的作用域仅限于其创建栈帧和线程，创建栈帧返回时则自动删除；把本地引用提升为全局引用后，则可以在附属于 JVM 的任何线程中使用，但也需要被手动回收；弱引用则是一种由 GC [\href{https://stackoverflow.com/questions/9465767/if-the-jvm-keeps-moving-objects-around-when-it-does-gc-how-does-it-resolve-refe}{JVM 复制垃圾收集器}] 负责回收的全局引用，只要一个弱引用对象没有任一强引用，GC 就可能在任意时候回收它，并使得引用变成空值，该引用只能被回收，所有后续使用都需要先提升为强引用。
+
+\begin{table}[H]
+\caption{JNI 对象引用}
+\label{tab:jniobjref}
+\centering
+\small
+\begin{tabular}{|l|c|c|l|}
+\hline
+JNI 对象引用 & GC 自动回收 & 跨函数/跨线程 & JVM 自动释放 \\
+\hline
+本地引用（local reference） & N & N & Y（也可以手动释放） \\
+\hline
+全局引用（global reference） & N & Y & N \\
+\hline
+弱引用（weak reference） & Y & Y & N \\
+\hline
+\end{tabular}
+\end{table}
+
+BEAM-JNI 存在以下不足。
+
+\begin{enumerate}
+\item 对于无效的局部引用错误，当一个全局变量被多次赋值且是被全局引用重写时，BEAM-JNI 会产生误报。
+\item JNI 函数调用是间接的通过指针进行的（与反射机制类似），BEAM-JNI 不知道底层调用点被实际调用的 Java 函数。比如对于异常处理错误，就只能假设所有函数都可能抛出异常，从而产生误报。
+\end{enumerate}
+
+\subsubsection{与指向分析的关系}
+
+以上多语言内存错误检查工具在宿主语言和外部语言侧是否使用了指针分析？如果使用了，那么指针分析的使用和工具的内存错误的分析是否是解耦的？增强使用的指针分析或接入指针分析（$^\Join$ 表示需要跨语言的指针分析）是否可以提升内存错误检查的精度？
+
+\begin{table}[H]
+\caption{已有的解决方案和指针分析的关系}
+\label{tab:mem-pt}
+\centering
+\small
+\begin{tabular}{|l|c|c|c|l|}
+\hline
+\multirow{2}{*}{内存错误检查} & \multicolumn{4}{c|}{指针分析} \\
+\cline{2-5}
+{} & 宿主语言 & 外部语言 & 解耦 & 提升 \\
+\hline
+CPyChecker & \xmark & \cmark & \cmark & \cmark（不足 3、4） \\
+\hline
+Pungi & \xmark & \xmark & - & \cmark（不足 1、2$^\Join$） \\
+\hline
+RID & \xmark & \xmark & - & \cmark（不足 5） \\
+\hline
+BEAM-JNI & \xmark & \xmark & - & \cmark（不足 2$^\Join$） \\
+\hline
+\end{tabular}
+\end{table}
+
+https://dl.acm.org/doi/abs/10.1145/186025.186041 互相依赖
