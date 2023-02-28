@@ -88,7 +88,7 @@ CPyChecker 存在如下不足。
 \begin{enumerate}
 \item 对于循环，只跟踪其一次迭代。
 \item 跟踪路径数有上限限制，不能分析复杂的程序。
-\item 缺乏函数间的分析，它假设只要函数返回 Python 对象（\texttt{PyObject*}），必然是一个新的引用或 \texttt{NULL}（异常），函数间的“偷/借”引用行为需要人为指定。
+\item 缺乏函数间的分析，它假设只要函数返回 Python 对象（\texttt{PyObject*}），必然是一个新的引用或 \texttt{NULL}（异常情形），函数间的“偷/借”引用行为需要人为指定。
 \item 基于 GCC 的别名分析 [\href{https://gcc.gnu.org/onlinedocs/gccint/Alias-analysis.html}{alias analysis}, \href{https://gcc.gnu.org/onlinedocs/gccint/Tree-SSA-passes.html}{tree SSA passes}]，能够检查一些简单的空指针解引用的问题，但是不支持域敏感的分析 [\href{https://gcc-python-plugin.readthedocs.io/en/latest/0.7.html#signal-noise-ratio-improvements}{release note 0.7}] 和多层指针 [\href{https://github.com/davidmalcolm/gcc-python-plugin/issues/167}{issue 167}, \texttt{PyObject *PyLong\_FromString(const char *str, char **pend, int base)}]。
 \item 不支持弱引用 [\href{https://github.com/davidmalcolm/gcc-python-plugin/issues/58}{issue 58}, \href{https://docs.python.org/3/c-api/weakref.html}{弱引用 Python/C API}]。
 \end{enumerate}
@@ -196,7 +196,7 @@ exit:
 RID 存在如下不足。
 
 \begin{enumerate}
-\item 扩展定义部分，Linux 内核子系统的引用计数 API 的语义基于 `inc'-`dec'、`get'-`put' 这样的关键字匹配，评估部分没有明确说误报率，人工算了一下高达 77\%。
+\item 扩展定义部分，Linux 内核子系统的引用计数 API 的语义基于 `inc'-`dec'、`get'-`put' 这样的关键字匹配，评估部分没有明确说误报率，根据文中数据人工算了一下高达 77\%。
 \item 非扩展定义部分，Python/C API 的语义仍需人工维护，但是只关注增减，而不关注是对哪个参数对象的增减，只提供了少量评估数据，并且是和 CPyChecker 对比，而不是和 Pungi 对比，提升与 Pungi 类似地来源于 CPyChecker 不是基于 SSA 形式的。交叉对比两篇文章的数据，RID 的精度应该不如 Pungi。
 \item 循环只展开一次。
 \item 分析路径数有上限。
@@ -231,7 +231,7 @@ JNI 对象 [\href{https://www.ibm.com/docs/en/sdk-java-technology/8?topic=jni-ga
 \small
 \begin{tabular}{|l|c|c|l|}
 \hline
-JNI 对象引用 & GC 自动回收 & 跨函数/跨线程 & JVM 自动释放 \\
+JNI 对象引用 & GC 自动回收 & 跨函数/跨线程 & 作用域自动释放 \\
 \hline
 本地引用（local reference） & N & N & Y（也可以手动释放） \\
 \hline
@@ -245,11 +245,12 @@ JNI 对象引用 & GC 自动回收 & 跨函数/跨线程 & JVM 自动释放 \\
 BEAM-JNI 存在以下不足。
 
 \begin{enumerate}
+\item 不支持检查全局引用的内存泄漏。
 \item 对于无效的局部引用错误，当一个全局变量被多次赋值且是被全局引用重写时，BEAM-JNI 会产生误报。
 \item JNI 函数调用是间接的通过指针进行的（与反射机制类似），BEAM-JNI 不知道底层调用点被实际调用的 Java 函数。比如对于异常处理错误，就只能假设所有函数都可能抛出异常，从而产生误报。
 \end{enumerate}
 
-\subsubsection{与指向分析的关系}
+\subsubsection{与指针分析的关系}
 
 以上多语言内存错误检查工具在宿主语言和外部语言侧是否使用了指针分析？如果使用了，那么指针分析的使用和工具的内存错误的分析是否是解耦的？增强使用的指针分析或接入指针分析（$^\Join$ 表示需要跨语言的指针分析）是否可以提升内存错误检查的精度？
 
@@ -270,9 +271,59 @@ Pungi & \xmark & \xmark & - & \cmark（不足 1、2$^\Join$） \\
 \hline
 RID & \xmark & \xmark & - & \cmark（不足 5） \\
 \hline
-BEAM-JNI & \xmark & \xmark & - & \cmark（不足 2$^\Join$） \\
+BEAM-JNI & \xmark & \xmark & - & \cmark（不足 3$^\Join$） \\
 \hline
 \end{tabular}
 \end{table}
 
-https://dl.acm.org/doi/abs/10.1145/186025.186041 互相依赖
+\subsection{指针分析主要工作}
+
+\begin{small}
+
+\defaultbibliographystyle{apalike}
+
+\renewcommand{\refname}{\small 1) 指针分析问题提出}
+\begin{bibunit}
+\nocite{weihl1980}
+\putbib[pta]
+\end{bibunit}
+
+\renewcommand{\refname}{\small 2) 别名分析的出现}
+\begin{bibunit}
+\nocite{landi1992a,emami1994}
+\putbib[pta]
+\end{bibunit}
+
+\renewcommand{\refname}{\small 3) 可计算性分析}
+\begin{bibunit}
+\nocite{landi1992b,ramalingam1994}
+\putbib[pta]
+\end{bibunit}
+
+\renewcommand{\refname}{\small 4) Andersen/Steensgaard-型指针分析的提出}
+\begin{bibunit}
+\nocite{andersen1994,steensgaard1996}
+\putbib[pta]
+\end{bibunit}
+
+\noindent \textbf{5) 提高分析精度}
+
+\renewcommand{\refname}{\small \normalfont 上下文（调用点）敏感}
+\begin{bibunit}
+\nocite{shivers1991,horwitz1997,reps2000}
+\putbib[pta]
+\end{bibunit}
+
+\renewcommand{\refname}{\small \normalfont 上下文（对象）敏感}
+\begin{bibunit}
+\nocite{milanova2002,milanova2005}
+\putbib[pta]
+\end{bibunit}
+
+\renewcommand{\refname}{\small \normalfont 域敏感}
+\begin{bibunit}
+\nocite{heintze2001a}
+\putbib[pta]
+\end{bibunit}
+
+\end{small}
