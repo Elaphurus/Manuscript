@@ -5,13 +5,8 @@ all: $(OUT) clean
 $(OUT): $(wildcard *.tex *.bib *.cls *.eps *.jpg)
 	xelatex $@
 #	bibtex  $@
-	bibtex  bu1
-	bibtex  bu2
-	bibtex  bu3
-	bibtex  bu4
-	bibtex  bu5
-	bibtex  bu6
-	bibtex  bu7
+	for number in `seq 1 16`; do \
+		bibtex bu$$number ; done
 	xelatex $@
 	xelatex $@
 
