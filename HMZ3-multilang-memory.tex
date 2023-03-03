@@ -1,6 +1,9 @@
+\newpage
+
 \section{多语言程序的内存错误与指针分析}
 
 \subsection{多语言程序的内存错误}
+\label{sec:membug}
 
 High-level 的宿主语言一般采用自动垃圾收集机制管理其堆内存。例如，Python 使用引用计数算法进行自动垃圾收集，Python runtime 在程序执行过程中调整引用计数并维持对象的引用计数（ob\_refcnt）等于其引用数的不变式，当对象的引用计数为 0 时，垃圾收集器回收其堆空间。Go 使用优化的标记清除算法进行自动垃圾收集 [\href{https://zhuanlan.zhihu.com/p/76802887}{Go 内存模型}, \href{https://tip.golang.org/doc/gc-guide}{Go 垃圾收集器}，\href{https://zhuanlan.zhihu.com/p/390926887}{Go 垃圾回收算法}]，当堆分配占用量或回收时间间隔达到触发阀值，则会进行标记清除以回收不可达的内存占用。
 
@@ -76,6 +79,7 @@ Go 的垃圾收集器不能自动回收底层 C 模块中的 Go 对象，需要�
 \end{enumerate}
 
 \subsection{已有的解决方案}
+\label{sec:membug-solutions}
 
 \subsubsection{gcc-python-plugin/gcc-with-cpychecker}
 
@@ -276,53 +280,222 @@ BEAM-JNI & \xmark & \xmark & - & \cmark（不足 3$^\Join$） \\
 \end{tabular}
 \end{table}
 
+\subsection{案例分析}
+\label{sec:cases}
+
+考虑宿主语言采用某种垃圾收集机制，外部语言依赖显式手动回收的情形。
+
+\begin{enumerate}
+\item \textbf{宿主侧释放宿主语言对象}通过 GC 自动进行。
+\item \textbf{宿主侧释放外部语言对象}通过外部函数调用进行，例如 \texttt{C.free()}。
+\item \textbf{外部侧释放外部语言对象}通过手动内存管理进行，例如 \texttt{free()}。
+\item \textbf{外部侧释放宿主语言对象}通过外部函数接口 FFI 手动管理，例如 \texttt{Py\_DECREF()}、\texttt{DeleteGlobalRef()}。
+\end{enumerate}
+
+前述的问题和解决方案主要关注第 4 类可能导致的内存泄漏。更一般地，我们考虑以上各类在多语言程序中可能存在的多种内存错误，以及需要的指向信息。
+
+\subsubsection{Use-after-free}
+
+根据语言侧的不同，分为：
+
+\begin{itemize}
+\item 外部侧分配的内存（外部语言对象），在外部侧被 free 后（以上第 3 类），在宿主侧 use。
+\item 宿主侧分配的内存（宿主语言对象），在外部侧被 free 后（以上第 4 类），在外部侧 use。
+\item 宿主侧分配的内存（宿主语言对象），在外部侧被 free 后（以上第 4 类），在宿主侧 use。
+\end{itemize}
+
+Use 包括：(i）解引用（悬空指针解引用），(ii）再次 free（多次回收）。
+
+\subsubsection{空指针解引用}
+
+Free 之后置空可以避免再次 free 触发错误，但是对空指针解引用会发生段错误。
+
+\begin{itemize}
+\item 外部侧分配的内存（外部语言对象），在外部侧被 free 并置空后，在宿主侧解引用。
+\item 宿主侧分配的内存（宿主语言对象），在外部侧被 free 并置空后，在外部侧解引用。
+\item 宿主侧分配的内存（宿主语言对象），在外部侧被 free 并置空后，在宿主侧 use。
+\end{itemize}
+
+\subsubsection{指针未初始化}
+
+对仅声明未初始化的指针解引用是悬空指针解引用的特殊情况。
+
+\begin{itemize}
+\item 在宿主侧声明的指针，在外部侧解引用。
+\item 在外部侧声明的指针，在宿主侧解引用。
+\end{itemize}
+
+\subsubsection{其他约束}
+
+如 cgo 要求 C 侧不应持有一个指向包含 Go 指针的堆内存的 Go 指针（见 \autoref{code:bug-cgo} 及相关讨论）。
+
+\subsection{相关的单语言工作}
+\label{sec:singlelang}
+
+\defaultbibliographystyle{plain}
+%% bu16
+\renewcommand{\refname}{\small}
+\begin{bibunit}
+
+指针分析是一个高复杂度的基础分析，虽然可以优化多种上层分析，但在已有的分析中集成指针分析往往存在开销过大的问题。然而，指针分析作为一种描述内存关系的分析框架，在需求驱动的指针分析中集成其他分析是一种可能的解决方案（异常处理 \cite{bravenboer2009b,kastrinis2013a}，内存错误检查 \cite{yan2018,wang2019}，调用图构建 \cite{smaragdakis2015}）。
+
+\subsubsection{Wang et al. 2019 TsmartGP}
+
+TsmartGP \cite{wang2019} 是 Wang 等人在 ASE 2019 提出的一种利用指针分析检查指针未初始化的内存错误的方法，通过流敏感、上下文敏感、准路径敏感提升指针分析精度，并通过多入口机制优化效率。如 \autoref{code:bug-noninit} 所示，考虑 else 分支，\texttt{p} 的指向集合可能未空，对其解引用会导致悬空指针解引用。
+
+\begin{lstfloat}
+\begin{lstlisting}[language={C},caption={指针未初始化错误例子},label={code:bug-noninit}]
+int main() {
+  int *p;
+  int a;
+  scanf("%d", &a);
+  if (a > 0)
+    p = &a;
+  *p = 0;
+  return *p;
+}
+\end{lstlisting}
+\end{lstfloat}
+
+\href{https://cppcheck.sourceforge.io}{Cppcheck} 和 \href{https://clang-analyzer.llvm.org/available_checks.html}{Clang Static Analyzers} 中也集成了指针相关的分析，但是对未初始化的错误误报率分别高达 96.9\% 和 83.3\%，TsmartGP 有效通过更精确的指针分析优化了内存错误检查的精度。
+
+\subsubsection{Yan et al. 2018 CRed}
+
+CRed \cite{yan2018} 是 Yan 等人在 ICSE 2018 提出的一种利用指针分析检查 use-after-free（UAF）错误的方法。假设有一对表达式 $(free(p@l_f),use(q@l_u))$，其中 $p$ 和 $q$ 为指针，$l_f$ 和 $l_u$ 为行号。记 $\mathcal{P}(l)$ 为从 main 到 $l$ 的所有可能路径组成的集合。那么该表达式对是 UAF 漏洞当且仅当时空相关性 $\mathbb{ST}(free(p@l_f),use(q@l_u))$ 成立：
+%
+$$
+\mathbb{ST}(free(p@l_f),use(q@l_u)) := \exists (\rho_f,\rho_u) \in \mathcal{P}(l_f) \times \mathcal{P}(l_u) : (\rho_f,l_f) \leadsto (\rho_u,l_u) \wedge (\rho_f,p) \cong (\rho_u,q)
+$$
+%
+$\leadsto$ 表示\emph{时间可达}（在程序的过程间控制流图上），$\cong$ 表示\emph{空间别名}（$p$ 和 $q$ 指向同一对象），$(\rho,l)$ 表示路径 $\rho$ 下的程序点 $l$。
+
+CRed 首先使用一个快速但不精确的指针分析得到备选的 UAF 对，然后做两次基于需求驱动的指针分析的规约来精化结果，一次是上下文规约，一次是路径规约。
+
+\small
+\putbib[pta]
+\end{bibunit}
+
+\subsection{总结}
+
+\begin{itemize}
+\item 已有的多语言内存错误检查工作大多不依赖指针分析，但是可以从指针分析得到提升（\autoref{sec:membug}、\autoref{sec:membug-solutions}）;
+\item 已有的多语言内存错误检查工作主要关心多语言互操作的部分情形（在接口层通过 FFI 管理宿主语言对象），仍有多种情形没有得到关注（\autoref{sec:cases}）；
+\item 对于没有关注的情形，在单语言上的相关工作表明（内存漏洞模式相近，但是指针分析方法不能直接适用），定制需求驱动的指针分析可以提高内存错误检查的精度，同时平衡指针分析的效率（\autoref{sec:singlelang}）。
+\end{itemize}
+
 \subsection{指针分析主要工作}
 
 \begin{small}
 
 \defaultbibliographystyle{apalike}
 
-\renewcommand{\refname}{\small 1) 指针分析问题提出}
+%% bu1
+\renewcommand{\refname}{\small 指针分析问题提出}
 \begin{bibunit}
 \nocite{weihl1980}
 \putbib[pta]
 \end{bibunit}
 
-\renewcommand{\refname}{\small 2) 别名分析的出现}
+%% bu2
+\renewcommand{\refname}{\small 别名分析的出现}
 \begin{bibunit}
 \nocite{landi1992a,emami1994}
 \putbib[pta]
 \end{bibunit}
 
-\renewcommand{\refname}{\small 3) 可计算性分析}
+%% bu3
+\renewcommand{\refname}{\small 可计算性分析}
 \begin{bibunit}
 \nocite{landi1992b,ramalingam1994}
 \putbib[pta]
 \end{bibunit}
 
-\renewcommand{\refname}{\small 4) Andersen/Steensgaard-型指针分析的提出}
+%% bu4
+\renewcommand{\refname}{\small Andersen/Steensgaard-型指针分析的提出}
 \begin{bibunit}
 \nocite{andersen1994,steensgaard1996}
 \putbib[pta]
 \end{bibunit}
 
-\noindent \textbf{5) 提高分析精度}
+\noindent \textbf{提高分析精度}
 
+%% bu5
 \renewcommand{\refname}{\small \normalfont 上下文（调用点）敏感}
 \begin{bibunit}
-\nocite{shivers1991,horwitz1997,reps2000}
+\nocite{shivers1991,horwitz1997,reps2000,lhotak2008,xu2008}
 \putbib[pta]
 \end{bibunit}
 
+%% bu6
 \renewcommand{\refname}{\small \normalfont 上下文（对象）敏感}
 \begin{bibunit}
 \nocite{milanova2002,milanova2005}
 \putbib[pta]
 \end{bibunit}
 
+
+%% bu7
+\renewcommand{\refname}{\small \normalfont 上下文（类型）敏感}
+\begin{bibunit}
+\nocite{smaragdakis2011}
+\putbib[pta]
+\end{bibunit}
+
+%% bu8
 \renewcommand{\refname}{\small \normalfont 域敏感}
 \begin{bibunit}
 \nocite{heintze2001a}
+\putbib[pta]
+\end{bibunit}
+
+%% bu9
+\renewcommand{\refname}{\small \normalfont 流敏感}
+\begin{bibunit}
+\nocite{rinetzky2008}
+\putbib[pta]
+\end{bibunit}
+
+\noindent \textbf{提高求解效率}
+
+%% bu10
+\renewcommand{\refname}{\small \normalfont 基于 CFL 可达性优化时间效率}
+\begin{bibunit}
+\nocite{reps1998,zhang2013}
+\putbib[pta]
+\end{bibunit}
+
+%% bu11
+\renewcommand{\refname}{\small \normalfont 基于约束图优化时间效率}
+\begin{bibunit}
+\nocite{rountev2000,hardekopf2007a,hardekopf2007b,nasre2012,smaragdakis2013}
+\putbib[pta]
+\end{bibunit}
+
+%% bu12
+\renewcommand{\refname}{\small \normalfont 基于 BDD 优化空间效率}
+\begin{bibunit}
+\nocite{berndl2003,whaley2004,whaley2005,lhotak2006,bravenboer2009a}
+\putbib[pta]
+\end{bibunit}
+
+%% bu13
+\renewcommand{\refname}{\small 需求驱动的指针分析}
+\begin{bibunit}
+\nocite{heintze2001b,guyer2003,sridharan2005,sridharan2006,fu2007,zheng2008,bravenboer2009b,kastrinis2013a,yan2018,sui2018}
+\putbib[pta]
+\end{bibunit}
+
+%% bu14
+\renewcommand{\refname}{\small 精度 VS 效率：可选上下文敏感}
+\begin{bibunit}
+\nocite{kastrinis2013b,oh2014,oh2015,hassanshahi2017,jeong2017,li2018a,li2018b,lu2019,thakur2020,li2020,jeon2020,tan2021,lu2021a,lu2021b,li2022,wala2018}
+\putbib[pta]
+\end{bibunit}
+
+%% bu15
+\renewcommand{\refname}{\small 综述}
+\begin{bibunit}
+\nocite{hind2001,ryder2003,sridharan2013,smaragdakis2015,kanvar2016}
 \putbib[pta]
 \end{bibunit}
 
