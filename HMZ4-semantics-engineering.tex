@@ -1,0 +1,78 @@
+\section{Semantics engineering}
+
+\subsection{Theory of programming languages}
+
+\paragraph{Calculus} is a logic for calculating with the terms of the language.
+For example,
+
+\centerline{e = x | $\lambda$ x.e | (e e)}
+
+Extensions with primitive data:
+
+\centerline{e = x | $\lambda$ x.e | (e e) | tt | ff | (if e e e)}
+
+External interpretation functions ($\delta$):
+
+\centerline{(if tt e e') if-tt e}
+
+\centerline{(if ff e e') if-ff e'}
+
+\paragraph{Semantics} is a system for determining the value of a program.
+
+\paragraph{Reduction} is a relation on terms:
+
+\centerline{(($\lambda$ x.e) e') beta e[x = x'] (e with x replaced by e')}
+
+\centerline{(($\lambda$ x.e) e') beta [e'/x]e (substition e' for x in e)}
+
+\paragraph{Equational system} is defined with three properties:
+
+For any relation R,
+
+\begin{multicols}{3}
+\textit{reflexivity}
+$\frac{\text{e R e'}}{\text{e e'' R e' e''}}$
+
+\textit{symmetry}
+$\frac{\text{e R e'}}{\text{e'' e R e'' e'}}$
+
+\textit{transitivity}
+$\frac{\text{e R e'}}{\text{$\lambda$ x.e R $\lambda$ x.e'}}$
+\end{multicols}
+
+With an equational system, we can prove such facts as
+
+\centerline{e (Y e) = (Y e)}
+
+meaning every single term has a fixpoint.
+
+In Plotkin's theory of programming languages, a semantic is a relation
+\textit{eval} from programs to values:
+
+\centerline{eval : Program $\times$ Value}
+
+\centerline{def e eval v iff e = v}
+
+We got a \textit{specification} of an interpreter after proving that
+\textit{eval} is a function.
+
+\centerline{eval : Program $\rightarrow$ Value}
+
+\centerline{eval(e) = v}
+
+Prove that the calculus satisfies a standard reduction property. This gives us a
+second semantic.
+
+\centerline{eval-standard : Program $\rightarrow$ Value}
+
+\centerline{def eval-standard(e) = v iff e standard reduces to v}
+
+Curry-Feys's \textit{standard reduction} is a strategy for the lambda calculus,
+that is, a function that picks the next reducible expression (called
+\textit{redex}) to reduce. While Plotkin specifically uses the
+leftmost-outermost strategy.
+
+\begin{thebibliography}{9}
+\bibitem{redex-tutorial}
+Robert Bruce Findler, Casey Klein, Burke Fetscher, and Matthias Felleisen. (2015) \emph{Redex: Practical Semantics Engineering}, \url{https://docs.racket-lang.org/redex/index.html}.
+\end{thebibliography}
