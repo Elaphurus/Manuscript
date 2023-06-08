@@ -5,25 +5,31 @@
 \paragraph{Calculus} is a logic for calculating with the terms of the language.
 For example,
 
-\centerline{e = x | $\lambda$ x.e | (e e)}
+\hspace{\parindent}
+e = x | $\lambda$ x.e | (e e)
 
 Extensions with primitive data:
 
-\centerline{e = x | $\lambda$ x.e | (e e) | tt | ff | (if e e e)}
+\hspace{\parindent}
+e = x | $\lambda$ x.e | (e e) | tt | ff | (if e e e)
 
 External interpretation functions ($\delta$):
 
-\centerline{(if tt e e') if-tt e}
+\hspace{\parindent}
+(if tt e e') if-tt e
 
-\centerline{(if ff e e') if-ff e'}
+\hspace{\parindent}
+(if ff e e') if-ff e'
 
 \paragraph{Semantics} is a system for determining the value of a program.
 
 \paragraph{Reduction} is a relation on terms:
 
-\centerline{(($\lambda$ x.e) e') beta e[x = x'] (e with x replaced by e')}
+\hspace{\parindent}
+(($\lambda$ x.e) e') beta e[x = x'] (e with x replaced by e')
 
-\centerline{(($\lambda$ x.e) e') beta [e'/x]e (substition e' for x in e)}
+\hspace{\parindent}
+(($\lambda$ x.e) e') beta [e'/x]e (substition e' for x in e)
 
 \paragraph{Equational system} is defined with three properties:
 
@@ -42,35 +48,254 @@ $\frac{\text{e R e'}}{\text{$\lambda$ x.e R $\lambda$ x.e'}}$
 
 With an equational system, we can prove such facts as
 
-\centerline{e (Y e) = (Y e)}
+\hspace{\parindent}
+e (Y e) = (Y e)
 
-meaning every single term has a fixpoint.
+meaning every single term has a \textit{fixpoint}.
+
+\asterism
 
 In Plotkin's theory of programming languages, a semantic is a relation
 \textit{eval} from programs to values:
 
-\centerline{eval : Program $\times$ Value}
+\hspace{\parindent}
+eval : Program $\times$ Value
 
-\centerline{def e eval v iff e = v}
+\hspace{\parindent}
+def e eval v iff e = v
 
-We got a \textit{specification} of an interpreter after proving that eval is a
+We get a \textit{specification} of an interpreter after proving that eval is a
 function.
 
-\centerline{eval : Program $\rightarrow$ Value}
+\hspace{\parindent}
+eval : Program $\rightarrow$ Value
 
-\centerline{eval(e) = v}
+\hspace{\parindent}
+eval(e) = v
 
 Prove that the calculus satisfies a standard reduction property. This gives us a
 second semantic.
 
-\centerline{eval-standard : Program $\rightarrow$ Value}
+\hspace{\parindent}
+eval-standard : Program $\rightarrow$ Value
 
-\centerline{def eval-standard(e) = v iff e standard reduces to v}
+\hspace{\parindent}
+def eval-standard(e) = v iff e standard reduces to v
 
 Curry-Feys's \textit{standard reduction} is a strategy for the lambda calculus,
 that is, a function that picks the next reducible expression (called
-\textit{redex}) to reduce. While Plotkin specifically uses the
-leftmost-outermost strategy.
+\textit{redex}) to reduce. Plotkin specifically uses the leftmost-outermost
+strategy.
+
+Plotkin adds the \textit{truth} to the specification.
+
+\hspace{\parindent}
+def e $\sim$ e' iff placing e and e' into any context yields programs that
+
+\hspace{\parindent}
+produce the same observable behavior according to eval
+
+\subsection{Syntax}
+
+\begin{lstlisting}[frame=none,numbers=none]
+; syntax trees
+(define-language Lambda
+  (e ::= x
+         (lambda (x ...) e)
+         (e e ...))
+  (x ::= variable-not-otherwise-mentioned))
+
+; instances
+(define e1 (term y))
+(define e2 (term (lambda (y) y)))
+(define e3 (term (lambda (x y) y)))
+(define e4 (term (,e2 ,e3)))
+
+; a predicate that tests membership
+(define lambda? (redex-match? Lambda e))
+
+; language tests formulations
+(test-equal (lambda? e1) #true)
+(test-equal (lambda? e2) #true)
+(test-equal (lambda? e3) #true)
+(test-equal (lambda? e4) #true)
+
+(define eb1 (term (lambda (x x) y)))
+(define eb2 (term (lambda (x y) 3)))
+
+(test-equal (lambda? eb1) #true)
+(test-equal (lambda? eb2) #false)
+\end{lstlisting}
+
+\subsection{Metafunction}
+
+A metafunction is a function on terms of a specific language.
+
+\begin{lstlisting}[frame=none,numbers=none]
+; are the identifiers in the given sequence unique?
+; extended Kleene patterns: (lambda (x_!_ ...) e)
+
+(module+ test
+  (test-equal (term (unique-vars x y)) #true)
+  (test-equal (term (unique-vars x y x)) #false))
+
+(define-metafunction Lambda
+  ; a Redex contract with patterns
+  unique-vars : x ... -> boolean
+  [(unique-vars) #true]
+  [(unique-vars x x_1 ... x x_2 ...) #false]
+  [(unique-vars x x_1 ...) (unique-vars x_1 ...)])
+
+(module+ test
+  (test-results))
+
+; (subtract (x ...) x_1 ...) removes x_1 ... from (x ...)
+
+(module+ test
+  (test-equal (term (subtract (x y z x) x z)) (term (y))))
+
+(define-metafunction Lambda
+  subtract : (x ...) x ... -> (x ...)
+  [(subtract (x ...)) (x ...)]
+  [(subtract (x ...) x_1 x_2 ...)
+   (subtract (subtract1 (x ...) x_1) x_2 ...)])
+
+(module+ test
+  (test-results))
+
+; (subtract1 (x ...) x_1) removes x_1  from (x ...)
+
+(module+ test
+  (test-equal (term (subtract1 (x y z x) x)) (term (y z))))
+
+(define-metafunction Lambda
+  subtract1 : (x ...) x -> (x ...)
+  [(subtract1 (x_1 ... x x_2 ...) x)
+   (x_1 ... x_2new ...)
+   (where (x_2new ...) (subtract1 (x_2 ...) x))
+   (where #false (in x (x_1 ...)))]
+  [(subtract1 (x ...) x_1) (x ...)])
+
+(define-metafunction Lambda
+  in : x (x ...) -> boolean
+  [(in x (x_1 ... x x_2 ...)) #true]
+  [(in x (x_1 ...)) #false])
+
+(module+ test
+  (test-results))
+\end{lstlisting}
+
+\subsection{Scope}
+
+To specify the scope, a free-variables function specifies which language
+constructs bind and which one don't.
+
+\begin{lstlisting}[frame=none,numbers=none]
+; (fv e) computes the sequence of free variables of e
+; a variable occurrence of x is free in e
+; if no (lambda (... x ...) ...) dominates its occurrence
+
+(module+ test
+  (test-equal (term (fv x)) (term (x)))
+  (test-equal (term (fv (lambda (x) x))) (term ()))
+  (test-equal (term (fv (lambda (x) (y z x)))) (term (y z))))
+
+(define-metafunction Lambda
+  fv : e -> (x ...)
+  [(fv x) (x)]
+  [(fv (lambda (x ...) e))
+   (subtract (x_e ...) x ...)
+   (where (x_e ...) (fv e))]
+  [(fv (e_f e_a ...))
+   (x_f ... x_a ... ...)
+   (where (x_f ...) (fv e_f))
+   (where ((x_a ...) ...) ((fv e_a) ...))])
+\end{lstlisting}
+
+\textit{$\alpha$ equivalence} is a realtion that virtually eliminates variables
+from phrases and replaces them with arrows to their declarations. In
+lambda calculus-based languages, this transformation is often a part of the
+compiler, called the \textit{static-distance} phase.
+
+\begin{lstlisting}[frame=none,numbers=none]
+; (sd e) computes the static distance version of e
+
+(define-extended-language SD Lambda
+  (e ::= ....
+         (K n n)
+         n)
+  (n ::= natural))
+
+(define sd1 (term (K 1 1)))
+(define sd2 (term 1))
+
+(define SD? (redex-match? SD e))
+
+(module+ test
+  (test-equal (SD? sd1) #true)
+  (test-equal (SD? sd2) #true))
+
+
+(define-metafunction SD
+  sd : e -> e
+  [(sd e_1) (sd/a e_1 ())])
+
+(module+ test
+  (test-equal (term (sd/a x ())) (term x))
+  (test-equal (term (sd/a x ((y) (z) (x)))) (term (K 2 0)))
+  (test-equal (term (sd/a ((lambda (x) x) (lambda (y) y)) ()))
+              (term ((lambda () (K 0 0)) (lambda () (K 0 0)))))
+  (test-equal (term (sd/a (lambda (x) (x (lambda (y) y))) ()))
+              (term (lambda () ((K 0 0) (lambda () (K 0 0))))))
+  (test-equal (term (sd/a (lambda (z x) (x (lambda (y) z))) ()))
+              (term (lambda () ((K 0 1) (lambda () (K 1 0)))))))
+
+(define-metafunction SD
+  sd/a : e ((x ...) ...) -> e
+  [(sd/a x ((x_1 ...) ... (x_0 ... x x_2 ...) (x_3 ...) ...))
+   ; bound variable
+   (K n_rib n_pos)
+   (where n_rib ,(length (term ((x_1 ...) ...))))
+   (where n_pos ,(length (term (x_0 ...))))
+   (where #false (in x (x_1 ... ...)))]
+  [(sd/a (lambda (x ...) e_1) (e_rest ...))
+   (lambda () (sd/a e_1 ((x ...) e_rest ...)))]
+  [(sd/a (e_fun e_arg ...) (e_rib ...))
+   ((sd/a e_fun (e_rib ...)) (sd/a e_arg (e_rib ...)) ...)]
+  [(sd/a e_1 any)
+   ; a free variable is left alone
+   e_1])
+\end{lstlisting}
+
+Steps of the last formulation:
+
+\begin{lstlisting}[frame=none,numbers=none]
+   (sd/a (lambda (z x) (x (lambda (y) z))) ())
+-> (lambda () (sd/a (x (lambda (y) z)) ((z x))))
+-> (lambda () ((sd/a x ((z x))) (sd/a (lambda (y) z) ((z x)))))
+-> (lambda () ((K 0 1) (lambda () (sd/a z ((y) (z x))))))
+-> (lambda () ((K 0 1) (lambda () (K 1 0))))
+\end{lstlisting}
+
+$\alpha$ equivalence:
+
+\begin{lstlisting}[frame=none,numbers=none]
+; (=`$\alpha$` e_1 e_2) determines whether e_1 and e_2 are `$\alpha$` equivalent
+
+(module+ test
+  (test-equal (term (=`$\alpha$` (lambda (x) x) (lambda (y) y))) #true)
+  (test-equal (term (=`$\alpha$` (lambda (x) (x 1)) (lambda (y) (y 1)))) #true)
+  (test-equal (term (=`$\alpha$` (lambda (x) x) (lambda (y) z))) #false))
+
+(define-metafunction SD
+  =`$\alpha$` : e e -> boolean
+  [(=`$\alpha$` e_1 e_2) ,(equal? (term (sd e_1)) (term (sd e_2)))])
+
+(define (=`$\alpha$`/racket x y) (term (=`$\alpha$` ,x ,y)))
+
+(module+ test
+  (test-results))
+\end{lstlisting}
 
 \begin{thebibliography}{9}
 \bibitem{redex-tutorial}
