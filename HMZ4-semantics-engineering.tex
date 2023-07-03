@@ -29,7 +29,7 @@ External interpretation functions ($\delta$):
 (($\lambda$ x.e) e') beta e[x = x'] (e with x replaced by e')
 
 \hspace{\parindent}
-(($\lambda$ x.e) e') beta [e'/x]e (substition e' for x in e)
+(($\lambda$ x.e) e') beta [e'/x]e (substitution e' for x in e)
 
 \paragraph{Equational system} is defined with three properties:
 
@@ -292,6 +292,52 @@ $\alpha$ equivalence:
   [(=`$\alpha$` e_1 e_2) ,(equal? (term (sd e_1)) (term (sd e_2)))])
 
 (define (=`$\alpha$`/racket x y) (term (=`$\alpha$` ,x ,y)))
+
+(module+ test
+  (test-results))
+\end{lstlisting}
+
+\subsection{Substitution}
+
+\textit{Substitution} is the syntactic equivalent of function application.
+
+\begin{lstlisting}[frame=none,numbers=none]
+; (subst ([e x] ...) e_*) substitutes e ... for x ... in e_* (hygienically)
+
+(module+ test
+  (test-equal (term (subst ([1 x][2 y]) x)) 1)
+  (test-equal (term (subst ([1 x][2 y]) y)) 2)
+  (test-equal (term (subst ([1 x][2 y]) z)) (term z))
+  (test-equal (term (subst ([1 x][2 y]) (lambda (z w) (x y))))
+              (term (lambda (z w) (1 2))))
+  (test-equal (term (subst ([1 x][2 y]) (lambda (z w) (lambda (x) (x y)))))
+              (term (lambda (z w) (lambda (x) (x 2))))
+              #:equiv =α/racket)
+  (test-equal (term (subst ((2 x)) ((lambda (x) (1 x)) x)))
+              (term ((lambda (x) (1 x)) 2))
+              #:equiv =α/racket))
+
+(define-metafunction Lambda
+  subst : ((any x) ...) any -> any
+  [(subst [(any_1 x_1) ... (any_x x) (any_2 x_2) ...] x) any_x]
+  [(subst [(any_1 x_1) ...]  x) x]
+  [(subst [(any_1 x_1) ...]  (lambda (x ...) any_body))
+   (lambda (x_new ...)
+     (subst ((any_1 x_1) ...)
+            (subst-raw ((x_new x) ...) any_body)))
+   (where  (x_new ...)  ,(variables-not-in (term any_body) (term (x ...))))]
+  [(subst [(any_1 x_1) ...]  (any ...)) ((subst [(any_1 x_1) ...]  any) ...)]
+  [(subst [(any_1 x_1) ...]  any_*) any_*])
+
+(define-metafunction Lambda
+  subst-raw : ((x x) ...) any -> any
+  [(subst-raw ((x_n1 x_o1) ... (x_new x) (x_n2 x_o2) ...) x) x_new]
+  [(subst-raw ((x_n1 x_o1) ...)  x) x]
+  [(subst-raw ((x_n1 x_o1) ...)  (lambda (x ...) any))
+   (lambda (x ...) (subst-raw ((x_n1 x_o1) ...)  any))]
+  [(subst-raw [(any_1 x_1) ...]  (any ...))
+   ((subst-raw [(any_1 x_1) ...]  any) ...)]
+  [(subst-raw [(any_1 x_1) ...]  any_*) any_*])
 
 (module+ test
   (test-results))
