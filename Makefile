@@ -8,7 +8,7 @@ $(OUT): $(wildcard *.tex *.bib *.cls *.eps *.jpg)
 #	for number in `seq 1 16`; do \
 #		bibtex bu$$number ; done
 #	xelatex $@
-	xelatex $@
+#	xelatex $@
 
 clean:
 	rm -f *~ *.toc *.aux *.dvi *.bbl *.blg *.log *.out

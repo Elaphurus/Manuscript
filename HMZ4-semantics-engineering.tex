@@ -95,6 +95,15 @@ def e $\sim$ e' iff placing e and e' into any context yields programs that
 \hspace{\parindent}
 produce the same observable behavior according to eval
 
+\subsection{Redex}
+
+Redex is a scripting language and set of associated tools
+supporting the conception, design, construction, and testing of semantic systems
+such as programming languages, type systems, program logics, and program
+analyses. As a scripting language, it enables an engineer to create executable
+specifications of common semantic elements such as grammars, reduction
+relations, judgments, and metafunctions; the basic elements of formal systems.
+
 \subsection{Syntax}
 
 \begin{lstlisting}[frame=none,numbers=none]
@@ -312,10 +321,10 @@ $\alpha$ equivalence:
               (term (lambda (z w) (1 2))))
   (test-equal (term (subst ([1 x][2 y]) (lambda (z w) (lambda (x) (x y)))))
               (term (lambda (z w) (lambda (x) (x 2))))
-              #:equiv =α/racket)
+              #:equiv =`$\alpha$`/racket)
   (test-equal (term (subst ((2 x)) ((lambda (x) (1 x)) x)))
               (term ((lambda (x) (1 x)) 2))
-              #:equiv =α/racket))
+              #:equiv =`$\alpha$`/racket))
 
 (define-metafunction Lambda
   subst : ((any x) ...) any -> any
@@ -338,6 +347,155 @@ $\alpha$ equivalence:
   [(subst-raw [(any_1 x_1) ...]  (any ...))
    ((subst-raw [(any_1 x_1) ...]  any) ...)]
   [(subst-raw [(any_1 x_1) ...]  any_*) any_*])
+
+(module+ test
+  (test-results))
+\end{lstlisting}
+
+\subsection{Reduction and semantics}
+
+The logical way of generating an equivalence (or reduction) relation over terms
+uses through inductive inference rules that make the relation compatible with
+all syntactic constructions.
+
+An alternative and equivalent method is to introduce the notion of a
+\textit{context} and to use it to generate the reduction relation (or
+equivalence) from the notion of reduction:
+
+\begin{lstlisting}[frame=none,numbers=none]
+(define-extended-language Lambda-calculus Lambda
+  (e ::= .... n)
+  (n ::= natural)
+  (v ::= (lambda (x ...) e))
+
+  ; a context is an expression with one hole in lieu of a sub-expression
+  (C ::=
+     hole
+     (e ... C e ...)
+     (lambda (x_!_ ...) C)))
+
+(define Context? (redex-match? Lambda-calculus C))
+
+(module+ test
+  (define C1 (term ((lambda (x y) x) hole 1)))
+  (define C2 (term ((lambda (x y) hole) 0 1)))
+  (test-equal (Context? C1) #true)
+  (test-equal (Context? C2) #true))
+
+(module+ test
+  (test-results))
+\end{lstlisting}
+
+\textit{Reduction relations}:
+
+\begin{lstlisting}[frame=none,numbers=none]
+; the `$\lambda \beta$` calculus, reductions only
+(module+ test
+  ; does the one-step reduction reduce both `$\beta$` redexes?
+  (test--> -->`$\beta$`
+           #:equiv =`$\alpha$`/racket
+           (term ((lambda (x) ((lambda (y) y) x)) z))
+           (term ((lambda (x) x) z))
+           (term ((lambda (y) y) z)))
+
+  ; does the full reduction relation reduce all redexes?
+  (test-->> -->`$\beta$`
+            (term ((lambda (x y) (x 1 y 2))
+                   (lambda (a b c) a)
+                   3))
+            1))
+
+(define -->`$\beta$`
+  (reduction-relation
+   Lambda-calculus
+   (--> (in-hole C ((lambda (x_1 ..._n) e) e_1 ..._n))
+   (in-hole C (subst ([e_1 x_1] ...) e)))))
+
+(traces -->`$\beta$`
+        (term ((lambda (x y)
+                 ((lambda (f) (f (x 1 y 2)))
+                  (lambda (w) 42)))
+               ((lambda (x) x) (lambda (a b c) a))
+               3)))
+\end{lstlisting}
+
+Defining the \textit{call-by-value} calculus requires just a small change to the
+reduction rule:
+
+\begin{lstlisting}[frame=none,numbers=none]
+(define -->`$\beta$`v
+  (reduction-relation
+   Lambda-calculus
+   (--> (in-hole C ((lambda (x_1 ..._n) e) v_1 ..._n))
+        (in-hole C (subst ([v_1 x_1] ...) e)))))
+
+(traces -->`$\beta$`v
+        (term ((lambda (x y)
+                 ((lambda (f) (f (x 1 y 2)))
+                  (lambda (w) 42)))
+               ((lambda (x) x) (lambda (a b c) a))
+               3)))
+\end{lstlisting}
+
+\textit{Semantics}:
+
+\begin{lstlisting}[frame=none,numbers=none]
+(define-extended-language Standard Lambda-calculus
+  (v ::= n (lambda (x ...) e))
+  (E ::=
+     hole
+     (v ... E e ...)))
+
+(module+ test
+  (define t0
+    (term
+     ((lambda (x y) (x y))
+      ((lambda (x) x) (lambda (x) x))
+      ((lambda (x) x) 5))))
+  (define t0-one-step
+    (term
+     ((lambda (x y) (x y))
+      (lambda (x) x)
+      ((lambda (x) x) 5))))
+
+  ; yields only one term, leftmost-outermost
+  (test--> s->βv t0 t0-one-step)
+  ; but the transitive closure drives it to 5
+  (test-->> s->βv t0 5))
+
+(define s->βv
+  (reduction-relation
+   Standard
+   (--> (in-hole E ((lambda (x_1 ..._n) e) v_1 ..._n))
+        (in-hole E (subst ((v_1 x_1) ...) e)))))
+
+(module+ test
+  (test-results))
+\end{lstlisting}
+
+\begin{lstlisting}[frame=none,numbers=none]
+(module+ test
+  (test-equal (term (eval-value ,t0)) 5)
+  (test-equal (term (eval-value ,t0-one-step)) 5)
+
+  (define t1
+    (term ((lambda (x) x) (lambda (x) x))))
+  (test-equal (lambda? t1) #true)
+  (test-equal (redex-match? Standard e t1) #true)
+  (test-equal (term (eval-value ,t1)) 'closure))
+
+(define-metafunction Standard
+  eval-value : e -> v or closure
+  [(eval-value e) any_1 (where any_1 (run-value e))])
+
+(define-metafunction Standard
+  run-value : e -> v or closure
+  [(run-value n) n]
+  [(run-value v) closure]
+  [(run-value e)
+   (run-value e_again)
+   ; (v) means that we expect s->βv to be a function
+   (where (e_again) ,(apply-reduction-relation s->βv (term e)))])
 
 (module+ test
   (test-results))
